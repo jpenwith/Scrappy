@@ -7,13 +7,13 @@ import SwiftSoup
 struct ScrappyCommand: ParsableCommand {
     @Argument(help: "URL to scrape")
     public var url: String
-    
+
     @Option(help: "Maximum number of urls to crawl")
     public var maximumURLCount = 10
 
     public func run() throws {
         let semaphore = DispatchSemaphore(value: 0)
-        
+
         let url = URL(string: url)!
 
         Task {
@@ -27,8 +27,6 @@ struct ScrappyCommand: ParsableCommand {
         }
 
         semaphore.wait()
-        
-        
     }
 }
 
@@ -49,31 +47,38 @@ struct Scrappy {
     }
 
     mutating func execute() async throws -> Set<String> {
-        try await processNextURL()
-        
+        try await processURLs()
+
         return emailAddresses
     }
+    
+    mutating private func processURLs() async throws {
 
-    mutating private func processNextURL() async throws {
-        guard processedURLs.count < maximumURLCount else {
-            return
+        while processedURLs.count < maximumURLCount && urlsToProcess.count > 0 {
+            let urlToProcess = urlsToProcess.removeFirst()
+            
+            try await processURL(urlToProcess)
         }
+    }
 
-        guard urlsToProcess.count > 0 else {
-            return
-        }
+    mutating private func processURL(_ url: URL) async throws {
+        logMessage("Processing \(url)...")
 
-        let urlToProcess = urlsToProcess.removeFirst()
-
-        logMessage("Processing \(urlToProcess)...")
-
-        var request = URLRequest(url: urlToProcess)
+        var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0", forHTTPHeaderField: "User-Agent")
 
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
 
-        processedURLs.insert(urlToProcess)
+        processedURLs.insert(url)
+        
+        guard let response = response as? HTTPURLResponse else {
+            return
+        }
+
+        guard response.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("text/html") ?? false else {
+            return
+        }
 
         let responseBody = String(data: data, encoding: .utf8)!
 
@@ -90,9 +95,7 @@ struct Scrappy {
         if !anchorHREFs.isEmpty {
             logMessage("Found \(anchorHREFs.count) anchor hrefs...")
         }
-        self.appendURLsToProcess(Set(anchorHREFs.compactMap({$0.url(baseURL:urlToProcess)})))
-
-        try await processNextURL()
+        self.appendURLsToProcess(Set(anchorHREFs.compactMap({$0.url(baseURL: url)})))
     }
     
     mutating private func appendEmailAddresses(_ emailAddresses: Set<String>) {
@@ -131,9 +134,9 @@ struct Scrappy {
             return []
         }
 
-        let regex = try Regex("([a-zA-Z][a-zA-Z0-9._-]*@[a-zA-Z0-9._-]+\\.[a-zA-Z0-9_-]+)")
+        let regex = try Regex("([a-zA-Z][a-zA-Z0-9._-]*@[a-zA-Z0-9._-]+\\.[a-zA-Z]+)")
         let matches = documentHTML.matches(of: regex)
-        
+
         return Set(matches.map { match in
             String(documentHTML[match.range]).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         })
